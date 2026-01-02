@@ -6,19 +6,7 @@ export async function POST(request: NextRequest) {
   
   try {
     const body = await request.json()
-    const { question } = body
-
-    // Validate question
-    if (!question || typeof question !== 'string' || !question.trim()) {
-      endTimer(timerId, {
-        status: 'error',
-        error: 'Question is required',
-      })
-      return NextResponse.json(
-        { error: 'Question is required' },
-        { status: 400 }
-      )
-    }
+    const { question, messages } = body
 
     // Check for API key
     const apiKey = process.env.GROQ_API_KEY
@@ -34,13 +22,35 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Log the request
-    console.log('GROQ REQUEST:', question)
-
-    // Prepare request body for Groq API
-    const requestBody = {
-      model: 'llama-3.1-8b-instant',
-      messages: [
+    // Support both single-turn (question) and multi-turn (messages)
+    let groqMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
+    
+    if (messages && Array.isArray(messages) && messages.length > 0) {
+      // Multi-turn: use provided messages, ensure system message exists
+      groqMessages = messages.map(msg => ({
+        role: msg.role as 'system' | 'user' | 'assistant',
+        content: msg.content,
+      }))
+      
+      // Add system message if not present
+      const hasSystemMessage = groqMessages.some(msg => msg.role === 'system')
+      if (!hasSystemMessage) {
+        groqMessages.unshift({
+          role: 'system',
+          content: 'You are a helpful assistant.',
+        })
+      }
+      
+      // Limit to last 20 messages to avoid token limits (keep system message)
+      const systemMsg = groqMessages[0]?.role === 'system' ? groqMessages[0] : null
+      const recentMessages = groqMessages.filter(msg => msg.role !== 'system').slice(-20)
+      groqMessages = systemMsg ? [systemMsg, ...recentMessages] : recentMessages
+      
+      console.log('GROQ REQUEST (multi-turn):', groqMessages.length, 'messages')
+    } else if (question && typeof question === 'string' && question.trim()) {
+      // Single-turn: backward compatible
+      console.log('GROQ REQUEST (single-turn):', question)
+      groqMessages = [
         {
           role: 'system',
           content: 'You are a helpful assistant.',
@@ -49,7 +59,22 @@ export async function POST(request: NextRequest) {
           role: 'user',
           content: question,
         },
-      ],
+      ]
+    } else {
+      endTimer(timerId, {
+        status: 'error',
+        error: 'Question or messages are required',
+      })
+      return NextResponse.json(
+        { error: 'Question or messages are required' },
+        { status: 400 }
+      )
+    }
+
+    // Prepare request body for Groq API
+    const requestBody = {
+      model: 'llama-3.1-8b-instant',
+      messages: groqMessages,
     }
 
     // Call Groq API
